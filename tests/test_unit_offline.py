@@ -422,20 +422,25 @@ def test_idempotency_lifecycle():
         def get_idempotency_record(self, key):
             return self.records.get(key)
 
-        def create_idempotency_record(self, key, tenant_id, project_id, payload_hash, status="running"):
-            rec = {
-                "key": key,
-                "tenant_id": tenant_id,
-                "project_id": project_id,
-                "payload_hash": payload_hash,
-                "status": status,
-                "response_json": "",
-                "error": "",
-            }
-            self.records[key] = rec
-            return rec
+        def create_idempotency_record(self, key, tenant_id, project_id, payload_hash, status="running", reservation_token=None, **kwargs):
+            is_new = key not in self.records
+            if is_new:
+                rec = {
+                    "key": key,
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "payload_hash": payload_hash,
+                    "status": status,
+                    "reservation_token": reservation_token,
+                    "response_json": "",
+                    "error": "",
+                }
+                self.records[key] = rec
+            else:
+                rec = self.records[key]
+            return rec, is_new
 
-        def complete_idempotency_record(self, key, status, response_json="", error=""):
+        def complete_idempotency_record(self, key, status, response_json="", error="", reservation_token=None, **kwargs):
             if key in self.records:
                 self.records[key]["status"] = status
                 if response_json:
@@ -738,19 +743,24 @@ def test_idempotency_abandoned_recovery(monkeypatch):
         def get_idempotency_record(self, key):
             return self.records.get(key)
 
-        def create_idempotency_record(self, key, tenant_id, project_id, payload_hash, status="running"):
-            rec = {
-                "key": key,
-                "tenant_id": tenant_id,
-                "project_id": project_id,
-                "payload_hash": payload_hash,
-                "status": status,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self.records[key] = rec
-            return rec
+        def create_idempotency_record(self, key, tenant_id, project_id, payload_hash, status="running", reservation_token=None, **kwargs):
+            is_new = key not in self.records
+            if is_new:
+                rec = {
+                    "key": key,
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "payload_hash": payload_hash,
+                    "status": status,
+                    "reservation_token": reservation_token,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self.records[key] = rec
+            else:
+                rec = self.records[key]
+            return rec, is_new
 
-        def complete_idempotency_record(self, key, status, response_json="", error=""):
+        def complete_idempotency_record(self, key, status, response_json="", error="", reservation_token=None, **kwargs):
             if key in self.records:
                 self.records[key]["status"] = status
                 self.records[key]["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -923,7 +933,7 @@ async def test_orchestration_agent_failure_terminal_state(monkeypatch):
             return None
 
         def create_idempotency_record(self, **kwargs):
-            pass
+            return {"key": kwargs.get("key"), "status": "running"}, True
 
         def complete_idempotency_record(self, **kwargs):
             pass

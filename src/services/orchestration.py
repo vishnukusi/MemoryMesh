@@ -282,13 +282,19 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
             status="success",
         )
         if request.idempotency_key:
-            finalize_idempotency_success(repo, request.idempotency_key, chat_resp.model_dump())
+            finalize_idempotency_success(
+                repo, request.idempotency_key, chat_resp,
+                reservation_token=request.reservation_token,
+            )
         return chat_resp
 
     except Exception as e:
         logger.error(f"Orchestration error: {e}", exc_info=True)
         if request.idempotency_key:
-            finalize_idempotency_failure(repo, request.idempotency_key, str(e))
+            finalize_idempotency_failure(
+                repo, request.idempotency_key, str(e),
+                reservation_token=request.reservation_token,
+            )
         return ChatResponse(
             answer=f"An error occurred while processing your request. Your message was saved. Error: {str(e)}",
             session_id=request.session_id,

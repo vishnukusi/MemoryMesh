@@ -252,6 +252,7 @@ class ChatRequest(BaseModel):
     project_id: Optional[str] = "default"
     tenant_id: str = "tenant_alpha"
     idempotency_key: Optional[str] = None
+    reservation_token: Optional[str] = None
 
 
 class TaskUpdateRequest(BaseModel):

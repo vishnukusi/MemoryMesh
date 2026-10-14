@@ -211,8 +211,8 @@ SET t.owner_id = $person_id
 
 UPDATE_TASK_STATUS = """
 MATCH (t:Task {id: $task_id})
-WHERE t.revision = $expected_revision
-SET t.status = $new_status, t.revision = t.revision + 1,
+WHERE coalesce(t.revision, 1) = $expected_revision
+SET t.status = $new_status, t.revision = coalesce(t.revision, 1) + 1,
     t.updated_at = $updated_at
 RETURN t
 """
@@ -411,8 +411,11 @@ CREATE_IDEMPOTENCY_RECORD = """
 MERGE (k:IdempotencyRecord {key: $key})
 ON CREATE SET k.status = $status, k.tenant_id = $tenant_id,
               k.project_id = $project_id, k.payload_hash = $payload_hash,
-              k.created_at = $created_at, k.updated_at = $updated_at
-RETURN k
+              k.reservation_token = $reservation_token,
+              k.created_at = $created_at, k.updated_at = $updated_at,
+              k.is_new = true
+ON MATCH SET k.is_new = false
+RETURN k, k.is_new as is_new
 """
 
 GET_IDEMPOTENCY_RECORD = """
@@ -420,8 +423,19 @@ MATCH (k:IdempotencyRecord {key: $key})
 RETURN k
 """
 
+RECOVER_IDEMPOTENCY_RECORD = """
+MATCH (k:IdempotencyRecord {key: $key})
+WHERE k.status = 'running'
+SET k.reservation_token = $reservation_token,
+    k.updated_at = $updated_at,
+    k.error = $error
+RETURN k
+"""
+
 COMPLETE_IDEMPOTENCY_RECORD = """
 MATCH (k:IdempotencyRecord {key: $key})
+WHERE k.status = 'running'
+  AND ($reservation_token IS NULL OR k.reservation_token IS NULL OR k.reservation_token = $reservation_token)
 SET k.status = $status, k.response_json = $response_json,
     k.error = $error, k.updated_at = $updated_at
 RETURN k

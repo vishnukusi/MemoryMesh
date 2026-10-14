@@ -480,8 +480,9 @@ class GraphRepository:
     # ─── Idempotency ─────────────────────────────────────────────
 
     def create_idempotency_record(
-        self, key: str, tenant_id: str, project_id: str, payload_hash: str
-    ) -> dict:
+        self, key: str, tenant_id: str, project_id: str, payload_hash: str,
+        reservation_token: Optional[str] = None,
+    ) -> tuple[dict, bool]:
         now = utc_now_iso()
         result = self.graph.query(
             Q.CREATE_IDEMPOTENCY_RECORD,
@@ -491,20 +492,43 @@ class GraphRepository:
                 "tenant_id": tenant_id,
                 "project_id": project_id,
                 "payload_hash": payload_hash,
+                "reservation_token": reservation_token,
                 "created_at": now,
                 "updated_at": now,
             },
         )
-        return _result_nodes(result)[0] if _result_nodes(result) else {}
+        if result.result_set:
+            row = result.result_set[0]
+            node = _node_to_dict(row[0])
+            is_new = bool(row[1]) if len(row) > 1 else True
+            return node, is_new
+        return {}, True
 
     def get_idempotency_record(self, key: str) -> Optional[dict]:
         result = self.graph.ro_query(Q.GET_IDEMPOTENCY_RECORD, params={"key": key})
         nodes = _result_nodes(result)
         return nodes[0] if nodes else None
 
+    def recover_idempotency_record(
+        self, key: str, reservation_token: str, error: str = "Recovered from abandoned state"
+    ) -> Optional[dict]:
+        now = utc_now_iso()
+        result = self.graph.query(
+            Q.RECOVER_IDEMPOTENCY_RECORD,
+            params={
+                "key": key,
+                "reservation_token": reservation_token,
+                "error": error,
+                "updated_at": now,
+            },
+        )
+        nodes = _result_nodes(result)
+        return nodes[0] if nodes else None
+
     def complete_idempotency_record(
-        self, key: str, status: str, response_json: str = "", error: str = ""
-    ) -> dict:
+        self, key: str, status: str, response_json: str = "", error: str = "",
+        reservation_token: Optional[str] = None,
+    ) -> Optional[dict]:
         now = utc_now_iso()
         result = self.graph.query(
             Q.COMPLETE_IDEMPOTENCY_RECORD,
@@ -513,10 +537,12 @@ class GraphRepository:
                 "status": status,
                 "response_json": response_json,
                 "error": error,
+                "reservation_token": reservation_token,
                 "updated_at": now,
             },
         )
-        return _result_nodes(result)[0] if _result_nodes(result) else {}
+        nodes = _result_nodes(result)
+        return nodes[0] if nodes else None
 
     # ─── AgentRun ────────────────────────────────────────────────
 

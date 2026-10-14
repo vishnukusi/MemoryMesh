@@ -70,12 +70,14 @@ def test_secret_fact_isolation(repo_a, repo_b):
     repo_a.create_fact(secret_fact, pid_a)
 
     # Verify Alpha can see it
-    alpha_facts = repo_a.search_facts("secret_code", limit=10)
+    alpha_facts = repo_a.search_facts("secret_code", project_id=pid_a, limit=10)
     assert any(f.get("value") == "ALPHA_SECRET_XYZ123" for f in alpha_facts)
 
-    # Verify Beta CANNOT see it
-    beta_facts = repo_b.search_facts("secret_code", limit=10)
+    # Verify Beta CANNOT see it (neither scoped nor admin)
+    beta_facts = repo_b.search_facts("secret_code", project_id=pid_a, limit=10)
     assert not any(f.get("value") == "ALPHA_SECRET_XYZ123" for f in beta_facts)
+    beta_admin_facts = repo_b.search_facts_admin("secret_code", limit=10)
+    assert not any(f.get("value") == "ALPHA_SECRET_XYZ123" for f in beta_admin_facts)
 
 
 def test_episode_isolation(repo_a, repo_b):
@@ -115,11 +117,11 @@ def test_decision_isolation(repo_a, repo_b):
     repo_a.create_decision(dec, pid_a)
 
     # Alpha has it
-    alpha_decs = repo_a.search_decisions("Secret Alpha", limit=10)
+    alpha_decs = repo_a.search_decisions("Secret Alpha", project_id=pid_a, limit=10)
     assert any(d.get("title") == "Secret Alpha Decision" for d in alpha_decs)
 
     # Beta doesn't
-    beta_decs = repo_b.search_decisions("Secret Alpha", limit=10)
+    beta_decs = repo_b.search_decisions("Secret Alpha", project_id=pid_a, limit=10)
     assert not any(d.get("title") == "Secret Alpha Decision" for d in beta_decs)
 
 

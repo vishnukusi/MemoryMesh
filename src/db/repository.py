@@ -217,19 +217,31 @@ class GraphRepository:
         )
         return _result_nodes(result)
 
-    def search_facts(self, query: str, project_id: Optional[str] = None, limit: int = 20) -> list[dict]:
-        """Search facts, respecting active project boundary when project_id is provided."""
+    def search_facts(self, query: str, project_id: Optional[str] = None, limit: int = 20, allow_admin_global: bool = False) -> list[dict]:
+        """Search facts, respecting active project boundary.
+        
+        To prevent accidental access broadening, omitting project_id returns an empty
+        list unless allow_admin_global=True is explicitly specified.
+        """
         if project_id:
             result = self.graph.ro_query(
                 Q.SEARCH_FACTS,
                 params={"project_id": project_id, "query": query, "limit": limit},
             )
-        else:
+            return _result_nodes(result)
+        elif allow_admin_global:
             result = self.graph.ro_query(
                 Q.SEARCH_FACTS_GLOBAL,
                 params={"query": query, "limit": limit},
             )
-        return _result_nodes(result)
+            return _result_nodes(result)
+        else:
+            logger.warning("search_facts called without project_id; returning [] to enforce project boundary.")
+            return []
+
+    def search_facts_admin(self, query: str, limit: int = 20) -> list[dict]:
+        """Explicit tenant-wide administrative fact search."""
+        return self.search_facts(query, project_id=None, limit=limit, allow_admin_global=True)
 
     def get_fact(self, fact_id: str) -> Optional[dict]:
         result = self.graph.ro_query(Q.GET_FACT_BY_ID, params={"id": fact_id})
@@ -276,19 +288,30 @@ class GraphRepository:
         )
         return _result_nodes(result)
 
-    def search_decisions(self, query: str, project_id: Optional[str] = None, limit: int = 10) -> list[dict]:
-        """Search decisions, scoped to project when project_id is provided."""
+    def search_decisions(self, query: str, project_id: Optional[str] = None, limit: int = 10, allow_admin_global: bool = False) -> list[dict]:
+        """Search decisions, scoped strictly to project.
+        
+        Omitting project_id returns [] unless allow_admin_global=True.
+        """
         if project_id:
             result = self.graph.ro_query(
                 Q.SEARCH_DECISIONS,
                 params={"project_id": project_id, "query": query, "limit": limit},
             )
-        else:
+            return _result_nodes(result)
+        elif allow_admin_global:
             result = self.graph.ro_query(
                 Q.SEARCH_DECISIONS_GLOBAL,
                 params={"query": query, "limit": limit},
             )
-        return _result_nodes(result)
+            return _result_nodes(result)
+        else:
+            logger.warning("search_decisions called without project_id; returning [] to enforce project boundary.")
+            return []
+
+    def search_decisions_admin(self, query: str, limit: int = 10) -> list[dict]:
+        """Explicit tenant-wide administrative decision search."""
+        return self.search_decisions(query, project_id=None, limit=limit, allow_admin_global=True)
 
     def get_decision_with_evidence(self, decision_id: str) -> dict:
         result = self.graph.ro_query(
@@ -335,19 +358,49 @@ class GraphRepository:
         return []
 
     def create_blocked_by(self, blocked_id: str, blocker_id: str, project_id: Optional[str] = None) -> None:
-        """Create a BLOCKED_BY relationship after verifying no dependency cycle exists."""
+        """Create a BLOCKED_BY relationship after verifying no dependency cycle exists, serialized against concurrent races."""
+        if blocked_id == blocker_id:
+            raise TaskDependencyCycleError(f"Task {blocked_id} cannot depend on itself.")
+
         pid = project_id
         if not pid:
             task = self.get_task(blocked_id)
             pid = task.get("project_id", "") if task else ""
 
-        if pid:
-            existing_deps = self.get_project_dependencies(pid)
+        max_retries = 3
+        for attempt in range(max_retries):
+            # 1. Fetch current dependencies
+            existing_deps = self.get_project_dependencies(pid) if pid else []
+            # 2. Check cycle in-memory
             detect_dependency_cycle(blocked_id, blocker_id, existing_deps)
 
-        self.graph.query(Q.CREATE_BLOCKED_BY, params={
-            "blocked_id": blocked_id, "blocker_id": blocker_id,
-        })
+            # 3. Atomically create edge
+            if pid:
+                p_node = self.get_project(pid)
+                expected_rev = p_node.get("dep_revision", 0) if p_node else 0
+                res = self.graph.query(Q.CREATE_BLOCKED_BY_SERIALIZED, params={
+                    "project_id": pid,
+                    "blocked_id": blocked_id,
+                    "blocker_id": blocker_id,
+                    "expected_rev": expected_rev,
+                })
+                if res.result_set and len(res.result_set) > 0:
+                    return
+                # Concurrency conflict: another dependency was written concurrently
+                # Re-fetch dependencies; if the concurrent write completed a cycle, this raises TaskDependencyCycleError
+                fresh_deps = self.get_project_dependencies(pid)
+                detect_dependency_cycle(blocked_id, blocker_id, fresh_deps)
+                continue
+            else:
+                res = self.graph.query(Q.CREATE_BLOCKED_BY, params={
+                    "blocked_id": blocked_id,
+                    "blocker_id": blocker_id,
+                })
+                if not res.result_set:
+                    raise TaskDependencyCycleError(f"Dependency creation failed between {blocked_id} and {blocker_id}")
+                return
+
+        raise RuntimeError("Failed to resolve concurrent dependency creation after maximum retries.")
 
     def assign_task(self, task_id: str, person_id: str) -> None:
         self.graph.query(Q.ASSIGN_TASK, params={
@@ -459,19 +512,30 @@ class GraphRepository:
         )
         return _result_nodes(result)
 
-    def search_procedures(self, query: str, project_id: Optional[str] = None, limit: int = 10) -> list[dict]:
-        """Search procedures, scoped to project when provided."""
+    def search_procedures(self, query: str, project_id: Optional[str] = None, limit: int = 10, allow_admin_global: bool = False) -> list[dict]:
+        """Search procedures, scoped strictly to project.
+        
+        Omitting project_id returns [] unless allow_admin_global=True.
+        """
         if project_id:
             result = self.graph.ro_query(
                 Q.SEARCH_PROCEDURES,
                 params={"project_id": project_id, "query": query, "limit": limit},
             )
-        else:
+            return _result_nodes(result)
+        elif allow_admin_global:
             result = self.graph.ro_query(
                 Q.SEARCH_PROCEDURES_GLOBAL,
                 params={"query": query, "limit": limit},
             )
-        return _result_nodes(result)
+            return _result_nodes(result)
+        else:
+            logger.warning("search_procedures called without project_id; returning [] to enforce project boundary.")
+            return []
+
+    def search_procedures_admin(self, query: str, limit: int = 10) -> list[dict]:
+        """Explicit tenant-wide administrative procedure search."""
+        return self.search_procedures(query, project_id=None, limit=limit, allow_admin_global=True)
 
     def get_approved_procedures(self) -> list[dict]:
         result = self.graph.ro_query(Q.GET_APPROVED_PROCEDURES)
@@ -526,9 +590,12 @@ class GraphRepository:
         return nodes[0] if nodes else None
 
     def complete_idempotency_record(
-        self, key: str, status: str, response_json: str = "", error: str = "",
-        reservation_token: Optional[str] = None,
+        self, key: str, status: str, reservation_token: str,
+        response_json: str = "", error: str = "",
     ) -> Optional[dict]:
+        if not reservation_token:
+            logger.warning(f"complete_idempotency_record rejected for key '{key}': missing reservation_token.")
+            return None
         now = utc_now_iso()
         result = self.graph.query(
             Q.COMPLETE_IDEMPOTENCY_RECORD,
@@ -537,6 +604,22 @@ class GraphRepository:
                 "status": status,
                 "response_json": response_json,
                 "error": error,
+                "reservation_token": reservation_token,
+                "updated_at": now,
+            },
+        )
+        nodes = _result_nodes(result)
+        return nodes[0] if nodes else None
+
+    def retry_failed_idempotency_record(
+        self, key: str, reservation_token: str,
+    ) -> Optional[dict]:
+        """Atomically transition a previously failed idempotency key back to running with a new worker token."""
+        now = utc_now_iso()
+        result = self.graph.query(
+            Q.RETRY_FAILED_IDEMPOTENCY_RECORD,
+            params={
+                "key": key,
                 "reservation_token": reservation_token,
                 "updated_at": now,
             },

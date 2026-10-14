@@ -58,6 +58,17 @@ def is_authorized_tenant(tenant_id: str, api_key: Optional[str] = None) -> tuple
     return False, f"Provided API key is not authorized for tenant '{tenant_id}'"
 
 
+def is_authorized_admin(api_key: Optional[str] = None) -> tuple[bool, str]:
+    """Check if the provided api_key has administrative privileges (Master Key)."""
+    if not settings.AUTH_ENABLED and settings.DEV_MODE:
+        return True, ""
+    if not api_key:
+        return False, f"Missing required admin API key header ({settings.API_KEY_HEADER})"
+    if settings.MASTER_API_KEY and _secure_compare(api_key, settings.MASTER_API_KEY):
+        return True, ""
+    return False, "Administrative operations require a valid Master API Key"
+
+
 async def verify_tenant_access(
     tenant_id: str,
     api_key: Optional[str] = Security(api_key_header_scheme),

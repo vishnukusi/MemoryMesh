@@ -474,7 +474,7 @@ def test_idempotency_lifecycle():
         request_id="idem-key-123",
         status="success",
     )
-    finalize_idempotency_success(repo, "idem-key-123", resp)
+    finalize_idempotency_success(repo, "idem-key-123", resp, reservation_token=req.reservation_token)
 
     # 4. Repeated invocation returns cached response
     status, cached_after = check_or_reserve_idempotency(repo, req)

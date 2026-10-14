@@ -22,7 +22,7 @@ from src.services.orchestration import process_chat
 from src.services.model_service import check_ollama_health
 from src.memory.retrieve import retrieve_session_history, retrieve_project_memory
 from src.memory.update import update_task_status
-from src.security.auth import is_authorized_tenant
+from src.security.auth import is_authorized_tenant, is_authorized_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,6 +34,38 @@ def _validate_tenant_or_raise(tenant_id: str, api_key: Optional[str] = None):
         if not api_key and settings.AUTH_ENABLED:
             raise HTTPException(status_code=401, detail=reason)
         raise HTTPException(status_code=403, detail=reason)
+
+
+def _validate_admin_or_raise(api_key: Optional[str] = None):
+    authorized, reason = is_authorized_admin(api_key)
+    if not authorized:
+        if not api_key and settings.AUTH_ENABLED:
+            raise HTTPException(status_code=401, detail=reason)
+        raise HTTPException(status_code=403, detail=reason)
+
+
+# ─── Administrative Tenant-Wide Memory ──────────────────────────
+
+@router.get("/api/admin/memory/search")
+async def admin_memory_search(
+    query: str = Query(...),
+    tenant_id: str = Query(...),
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+):
+    """Explicit tenant-wide administrative memory search requiring Master Key authorization."""
+    _validate_tenant_or_raise(tenant_id, api_key)
+    _validate_admin_or_raise(api_key)
+    repo = GraphRepository(tenant_id)
+    facts = await asyncio.to_thread(repo.search_facts_admin, query)
+    decisions = await asyncio.to_thread(repo.search_decisions_admin, query)
+    procedures = await asyncio.to_thread(repo.search_procedures_admin, query)
+    return {
+        "tenant_id": tenant_id,
+        "query": query,
+        "facts": facts,
+        "decisions": decisions,
+        "procedures": procedures,
+    }
 
 
 # ─── Health ──────────────────────────────────────────────────────

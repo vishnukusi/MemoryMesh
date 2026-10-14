@@ -44,6 +44,10 @@ def bootstrap_schema(tenant_id: str) -> None:
     _safe_create_index(graph, "Handoff", "id")
     _safe_create_index(graph, "Handoff", "status")
     _safe_create_index(graph, "IdempotencyRecord", "key")
+    _safe_create_index(graph, "IdempotencyRecord", "reservation_token")
+
+    # Explicit migration for legacy records missing reservation_token
+    _migrate_legacy_idempotency_records(graph)
 
     logger.info(f"Schema bootstrapped for tenant: {tenant_id}")
 
@@ -58,3 +62,15 @@ def _safe_create_index(graph: Graph, label: str, prop: str) -> None:
             pass  # Index already exists — fine
         else:
             logger.warning(f"Index creation failed for {label}.{prop}: {e}")
+
+
+def _migrate_legacy_idempotency_records(graph: Graph) -> None:
+    """Explicitly assign tokens to legacy idempotency records without bypassing checks."""
+    try:
+        graph.query("""
+        MATCH (k:IdempotencyRecord)
+        WHERE k.reservation_token IS NULL
+        SET k.reservation_token = 'legacy-' + k.key
+        """)
+    except Exception as e:
+        logger.debug(f"Legacy idempotency migration notice: {e}")

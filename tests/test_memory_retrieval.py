@@ -70,7 +70,7 @@ def test_fact_search(repo):
     )
     repo.create_fact(fact, pid)
 
-    results = repo.search_facts("database", limit=10)
+    results = repo.search_facts("database", project_id=pid, limit=10)
     assert any(f.get("value") == "PostgreSQL" for f in results)
 
 

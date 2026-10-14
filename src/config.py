@@ -29,7 +29,7 @@ class Settings:
     # Ollama local LLM
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3:4b")
-    MODEL_TIMEOUT: int = int(os.getenv("MODEL_TIMEOUT", "60"))
+    MODEL_TIMEOUT: int = int(os.getenv("MODEL_TIMEOUT", "120"))
     MAX_CONCURRENT_INFERENCE: int = int(os.getenv("MAX_CONCURRENT_INFERENCE", "2"))
 
     # Multi-tenant graph settings

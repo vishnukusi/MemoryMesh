@@ -55,15 +55,15 @@ RETURN e ORDER BY e.timestamp
 """
 
 GET_EPISODES_BY_PROJECT = """
-MATCH (e:Episode {project_id: $project_id})
+MATCH (p:Project {id: $project_id})-[:HAS_EPISODE]->(e:Episode)
 RETURN e ORDER BY e.timestamp DESC LIMIT $limit
 """
 
 GET_EPISODE_BY_ID = "MATCH (e:Episode {id: $id}) RETURN e"
 
 SEARCH_EPISODES = """
-MATCH (e:Episode)
-WHERE e.project_id = $project_id AND toLower(e.content) CONTAINS toLower($query)
+MATCH (p:Project {id: $project_id})-[:HAS_EPISODE]->(e:Episode)
+WHERE toLower(e.content) CONTAINS toLower($query)
 RETURN e ORDER BY e.timestamp DESC LIMIT $limit
 """
 
@@ -200,7 +200,18 @@ MERGE (p)-[:HAS_TASK]->(t)
 
 CREATE_BLOCKED_BY = """
 MATCH (blocker:Task {id: $blocker_id}), (blocked:Task {id: $blocked_id})
-MERGE (blocked)-[:BLOCKED_BY]->(blocker)
+WHERE blocker.id <> blocked.id
+MERGE (blocked)-[r:BLOCKED_BY]->(blocker)
+RETURN r
+"""
+
+CREATE_BLOCKED_BY_SERIALIZED = """
+MATCH (p:Project {id: $project_id}), (blocker:Task {id: $blocker_id}), (blocked:Task {id: $blocked_id})
+WHERE coalesce(p.dep_revision, 0) = $expected_rev
+  AND blocker.id <> blocked.id
+SET p.dep_revision = coalesce(p.dep_revision, 0) + 1
+MERGE (blocked)-[r:BLOCKED_BY]->(blocker)
+RETURN r, p.dep_revision as rev
 """
 
 ASSIGN_TASK = """
@@ -432,10 +443,19 @@ SET k.reservation_token = $reservation_token,
 RETURN k
 """
 
+RETRY_FAILED_IDEMPOTENCY_RECORD = """
+MATCH (k:IdempotencyRecord {key: $key})
+WHERE k.status = 'failed'
+SET k.status = 'running',
+    k.reservation_token = $reservation_token,
+    k.updated_at = $updated_at,
+    k.error = ''
+RETURN k
+"""
+
 COMPLETE_IDEMPOTENCY_RECORD = """
 MATCH (k:IdempotencyRecord {key: $key})
-WHERE k.status = 'running'
-  AND ($reservation_token IS NULL OR k.reservation_token IS NULL OR k.reservation_token = $reservation_token)
+WHERE k.status = 'running' AND k.reservation_token = $reservation_token
 SET k.status = $status, k.response_json = $response_json,
     k.error = $error, k.updated_at = $updated_at
 RETURN k

@@ -134,7 +134,7 @@ def check_or_reserve_idempotency(
                 )
             else:
                 repo.complete_idempotency_record(
-                    key, status="running", error="Recovered from abandoned state"
+                    key, status="running", reservation_token=request.reservation_token, error="Recovered from abandoned state"
                 )
             return "reserved", None
 
@@ -144,7 +144,15 @@ def check_or_reserve_idempotency(
 
     # If previous execution failed, allow safe retry by setting status to running
     logger.info(f"Retrying previously failed request for key: {key}")
-    repo.complete_idempotency_record(key, status="running", error="")
+    import uuid
+    request.reservation_token = uuid.uuid4().hex
+    retry_fn = getattr(repo, "retry_failed_idempotency_record", None)
+    if callable(retry_fn):
+        retry_fn(key=key, reservation_token=request.reservation_token)
+    else:
+        repo.complete_idempotency_record(
+            key, status="running", reservation_token=request.reservation_token, error=""
+        )
     return "reserved", None
 
 
@@ -153,10 +161,13 @@ def finalize_idempotency_success(
     key: Optional[str],
     response: Any,
     reservation_token: Optional[str] = None,
-) -> None:
+) -> bool:
     """Mark the idempotency key as completed and store the response."""
     if not key:
-        return
+        return True
+    if not reservation_token:
+        logger.warning(f"finalize_idempotency_success called for key '{key}' without reservation_token. Write rejected.")
+        return False
     try:
         if isinstance(response, ChatResponse):
             resp_json = response.model_dump_json()
@@ -164,21 +175,22 @@ def finalize_idempotency_success(
             resp_json = json.dumps(response)
         else:
             resp_json = str(response)
-        try:
-            repo.complete_idempotency_record(
-                key=key,
-                status="completed",
-                response_json=resp_json,
-                reservation_token=reservation_token,
+        res = repo.complete_idempotency_record(
+            key=key,
+            status="completed",
+            response_json=resp_json,
+            reservation_token=reservation_token,
+        )
+        if not res:
+            logger.warning(
+                f"Idempotency completion rejected for key '{key}' with token '{reservation_token}'. "
+                f"Reservation was either revoked, timed out, or already completed."
             )
-        except TypeError:
-            repo.complete_idempotency_record(
-                key=key,
-                status="completed",
-                response_json=resp_json,
-            )
+            return False
+        return True
     except Exception as e:
         logger.error(f"Failed to record idempotency completion for key {key}: {e}")
+        return False
 
 
 def finalize_idempotency_failure(
@@ -186,23 +198,27 @@ def finalize_idempotency_failure(
     key: Optional[str],
     error_message: str,
     reservation_token: Optional[str] = None,
-) -> None:
+) -> bool:
     """Mark the idempotency key as failed so it can be retried safely."""
     if not key:
-        return
+        return True
+    if not reservation_token:
+        logger.warning(f"finalize_idempotency_failure called for key '{key}' without reservation_token. Write rejected.")
+        return False
     try:
-        try:
-            repo.complete_idempotency_record(
-                key=key,
-                status="failed",
-                error=error_message,
-                reservation_token=reservation_token,
+        res = repo.complete_idempotency_record(
+            key=key,
+            status="failed",
+            error=error_message,
+            reservation_token=reservation_token,
+        )
+        if not res:
+            logger.warning(
+                f"Idempotency failure rejected for key '{key}' with token '{reservation_token}'. "
+                f"Reservation was already revoked or completed."
             )
-        except TypeError:
-            repo.complete_idempotency_record(
-                key=key,
-                status="failed",
-                error=error_message,
-            )
+            return False
+        return True
     except Exception as e:
         logger.error(f"Failed to record idempotency failure for key {key}: {e}")
+        return False

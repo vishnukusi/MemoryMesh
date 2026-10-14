@@ -21,6 +21,7 @@ from src.schemas import (
 from src.services.idempotency import (
     check_or_reserve_idempotency,
     finalize_idempotency_success,
+    finalize_idempotency_failure,
     IdempotencyConcurrentError,
     IdempotencyConflictError,
 )
@@ -409,3 +410,206 @@ def test_live_legacy_node_compatibility():
     f = repo.get_fact(legacy_fact_id)
     assert f is not None
     assert f["value"] == "monolith"
+
+
+# ─── 6. Simultaneous Dependency Cycle Concurrency Race ──────────
+
+def test_live_concurrent_simultaneous_dependency_cycle_race():
+    """Synchronize two independent threads to simultaneously add opposing dependencies A->B and B->A.
+    Verify that exactly one succeeds, one fails with TaskDependencyCycleError, and the database contains NO cycle.
+    """
+    repo = GraphRepository(TENANT)
+    p = ProjectNode(name="Simultaneous Race Project")
+    repo.create_project(p)
+
+    task_a = TaskNode(title="Task Alpha", project_id=p.id)
+    task_b = TaskNode(title="Task Beta", project_id=p.id)
+    repo.create_task(task_a, p.id)
+    repo.create_task(task_b, p.id)
+
+    barrier = threading.Barrier(2)
+    outcomes = []
+    errors = []
+
+    def add_dep_a_blocks_b():
+        try:
+            barrier.wait(timeout=5)
+            repo.create_blocked_by(task_a.id, task_b.id, p.id)
+            outcomes.append("A->B")
+        except Exception as e:
+            errors.append(("A->B", type(e).__name__, str(e)))
+
+    def add_dep_b_blocks_a():
+        try:
+            barrier.wait(timeout=5)
+            repo.create_blocked_by(task_b.id, task_a.id, p.id)
+            outcomes.append("B->A")
+        except Exception as e:
+            errors.append(("B->A", type(e).__name__, str(e)))
+
+    t1 = threading.Thread(target=add_dep_a_blocks_b)
+    t2 = threading.Thread(target=add_dep_b_blocks_a)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Exactly one succeeded and one was prevented with TaskDependencyCycleError
+    assert len(outcomes) == 1, f"Expected exactly 1 success, got outcomes={outcomes}, errors={errors}"
+    assert len(errors) == 1, f"Expected exactly 1 error, got {errors}"
+    assert errors[0][1] == "TaskDependencyCycleError", f"Expected TaskDependencyCycleError, got {errors[0]}"
+
+    # Database inspection: NO circular dependencies exist in graph
+    graph = get_graph(TENANT)
+    cycle_query = graph.query(
+        "MATCH (a:Task {id: $aid})-[r1:BLOCKED_BY]->(b:Task {id: $bid})-[r2:BLOCKED_BY]->(a) RETURN r1, r2",
+        {"aid": task_a.id, "bid": task_b.id},
+    ).result_set
+    assert len(cycle_query) == 0, "Discovered dependency cycle in database!"
+
+
+# ─── 7. Strict Idempotency Fencing & Token Lifecycle ─────────────
+
+def test_live_idempotency_strict_token_fencing():
+    """Verify strict token requirements: missing token rejection, wrong token rejection, retry of failed, and database state."""
+    repo = GraphRepository(TENANT)
+    key = f"strict-fencing-{new_id()}"
+    req = ChatRequest(
+        message="Strict Fencing Message",
+        tenant_id=TENANT,
+        project_id="p_strict",
+        session_id="s_strict",
+        idempotency_key=key,
+    )
+
+    # 1. Reservation creates node with exact token
+    status, cached = check_or_reserve_idempotency(repo, req)
+    assert status == "reserved"
+    token = req.reservation_token
+    assert token is not None
+
+    # Verify live database state
+    rec = repo.get_idempotency_record(key)
+    assert rec["status"] == "running"
+    assert rec["reservation_token"] == token
+
+    # 2. Rejection of missing token
+    res_none = repo.complete_idempotency_record(
+        key=key, status="completed", response_json="{}", reservation_token=""
+    )
+    assert res_none is None
+    # Database check: still running with original token
+    assert repo.get_idempotency_record(key)["status"] == "running"
+
+    # 3. Rejection of incorrect token
+    res_wrong = repo.complete_idempotency_record(
+        key=key, status="completed", response_json="{}", reservation_token="attacker-token-999"
+    )
+    assert res_wrong is None
+    # Database check: still running with original token
+    assert repo.get_idempotency_record(key)["status"] == "running"
+
+    # 4. Correct token can mark failed
+    ok_fail = finalize_idempotency_failure(repo, key, "Temporary worker crash", reservation_token=token)
+    assert ok_fail is True
+    rec_failed = repo.get_idempotency_record(key)
+    assert rec_failed["status"] == "failed"
+    assert "Temporary worker crash" in rec_failed["error"]
+
+    # 5. Safe retry of failed request assigns a NEW token and resets to running
+    req_retry = ChatRequest(
+        message="Strict Fencing Message",
+        tenant_id=TENANT,
+        project_id="p_strict",
+        session_id="s_strict",
+        idempotency_key=key,
+    )
+    status_retry, cached_retry = check_or_reserve_idempotency(repo, req_retry)
+    assert status_retry == "reserved"
+    new_token = req_retry.reservation_token
+    assert new_token != token
+
+    rec_retried = repo.get_idempotency_record(key)
+    assert rec_retried["status"] == "running"
+    assert rec_retried["reservation_token"] == new_token
+
+    # 6. Old worker cannot complete it now
+    res_stale = repo.complete_idempotency_record(
+        key=key, status="completed", response_json='{"answer": "stale"}', reservation_token=token
+    )
+    assert res_stale is None
+    assert repo.get_idempotency_record(key)["status"] == "running"
+
+    # 7. New worker completes it
+    chat_resp = ChatResponse(answer="Final success answer", session_id="s_strict", request_id=key)
+    ok_complete = finalize_idempotency_success(repo, key, chat_resp, reservation_token=new_token)
+    assert ok_complete is True
+
+    rec_final = repo.get_idempotency_record(key)
+    assert rec_final["status"] == "completed"
+    assert "Final success answer" in rec_final["response_json"]
+
+
+# ─── 8. Unscoped Retrieval Elimination & Admin Access ────────────
+
+def test_live_unscoped_retrieval_elimination_and_admin_endpoint():
+    """Verify that omitting project_id returns [] and does NOT leak tenant data, while admin access requires Master Key."""
+    repo = GraphRepository(TENANT)
+    proj = ProjectNode(name="Scoped Boundary Project")
+    repo.create_project(proj)
+
+    f = FactNode(subject="SecretMetric", predicate="score", value="9999", project_id=proj.id, status="current")
+    repo.create_fact(f, proj.id)
+
+    # 1. Scoped search finds it
+    assert len(repo.search_facts("SecretMetric", project_id=proj.id)) == 1
+
+    # 2. Omitting project_id or passing None returns []
+    assert repo.search_facts("SecretMetric", project_id=None) == []
+    assert repo.search_facts("SecretMetric", project_id="") == []
+    assert repo.search_decisions("SecretMetric", project_id=None) == []
+    assert repo.search_procedures("SecretMetric", project_id=None) == []
+
+    # 3. Explicit admin search finds it
+    assert len(repo.search_facts_admin("SecretMetric")) >= 1
+
+    # 4. API admin endpoint authorization check
+    from fastapi.testclient import TestClient
+    from src.api.main import app
+
+    client = TestClient(app)
+
+    old_auth = settings.AUTH_ENABLED
+    old_dev = settings.DEV_MODE
+    old_master = settings.MASTER_API_KEY
+    try:
+        settings.AUTH_ENABLED = True
+        settings.DEV_MODE = False
+        settings.MASTER_API_KEY = "master-super-secret"
+        settings.TENANT_KEYS[TENANT] = "tenant-regular-key"
+
+        # Missing key -> 401
+        assert client.get("/api/admin/memory/search", params={"query": "SecretMetric", "tenant_id": TENANT}).status_code == 401
+
+        # Regular tenant key -> 403 (needs admin Master Key)
+        res_tenant = client.get(
+            "/api/admin/memory/search",
+            params={"query": "SecretMetric", "tenant_id": TENANT},
+            headers={"X-API-Key": "tenant-regular-key"},
+        )
+        assert res_tenant.status_code == 403
+
+        # Master key -> 200
+        res_admin = client.get(
+            "/api/admin/memory/search",
+            params={"query": "SecretMetric", "tenant_id": TENANT},
+            headers={"X-API-Key": "master-super-secret"},
+        )
+        assert res_admin.status_code == 200
+        data = res_admin.json()
+        assert any(x.get("value") == "9999" for x in data.get("facts", []))
+    finally:
+        settings.AUTH_ENABLED = old_auth
+        settings.DEV_MODE = old_dev
+        settings.MASTER_API_KEY = old_master

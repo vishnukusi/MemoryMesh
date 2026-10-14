@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def new_id() -> str:
@@ -249,10 +249,24 @@ class AgentTraceSummary(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: str
-    project_id: Optional[str] = "default"
+    project_id: str = "default"
     tenant_id: str = "tenant_alpha"
     idempotency_key: Optional[str] = None
     reservation_token: Optional[str] = None
+
+    @field_validator("project_id", mode="before")
+    @classmethod
+    def sanitize_project_id(cls, v: Any) -> str:
+        if v is None or not str(v).strip():
+            return "default"
+        return str(v).strip()
+
+    @field_validator("tenant_id", mode="before")
+    @classmethod
+    def sanitize_tenant_id(cls, v: Any) -> str:
+        if v is None or not str(v).strip():
+            return "tenant_alpha"
+        return str(v).strip()
 
 
 class TaskUpdateRequest(BaseModel):

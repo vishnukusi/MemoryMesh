@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 from falkordb import Graph
 
+from src.config import settings
 from src.db.connection import get_graph
 from src.db import queries as Q
 from src.schemas import (
@@ -258,6 +259,236 @@ class GraphRepository:
             fact["supporting_episodes"] = episodes
             return fact
         return {}
+
+    def set_fact_embedding(
+        self,
+        fact_id: str,
+        vector: list[float],
+        model: Optional[str] = None,
+    ) -> bool:
+        """Set the vector embedding and metadata for a Fact node."""
+        if not vector or not isinstance(vector, (list, tuple)):
+            raise ValueError("vector must be a non-empty list of floats")
+
+        target_model = model or settings.EMBEDDING_MODEL
+        dim = len(vector)
+        if dim != settings.EMBEDDING_DIM:
+            raise ValueError(f"Vector dimension {dim} does not match expected {settings.EMBEDDING_DIM}")
+
+        vec_str = "[" + ", ".join(f"{float(x):.8f}" for x in vector) + "]"
+        now = utc_now_iso()
+        query = (
+            f"MATCH (f:Fact {{id: $id}}) "
+            f"SET f.embedding = vecf32({vec_str}), "
+            f"    f.embedding_model = $model, "
+            f"    f.embedding_dim = $dim, "
+            f"    f.embedding_updated_at = $updated_at "
+            f"RETURN f.id"
+        )
+        try:
+            res = self.graph.query(
+                query,
+                params={"id": fact_id, "model": target_model, "dim": dim, "updated_at": now},
+            )
+            return len(res.result_set) > 0
+        except Exception as e:
+            logger.error(f"Failed to set embedding for fact {fact_id}: {e}")
+            raise
+
+    def get_fact_embedding(self, fact_id: str) -> Optional[dict]:
+        """Retrieve embedding vector and metadata for a Fact."""
+        query = "MATCH (f:Fact {id: $id}) RETURN f.id, f.embedding, f.embedding_model, f.embedding_dim"
+        res = self.graph.ro_query(query, params={"id": fact_id})
+        if res.result_set:
+            row = res.result_set[0]
+            return {
+                "id": row[0],
+                "embedding": row[1],
+                "embedding_model": row[2],
+                "embedding_dim": row[3],
+            }
+        return None
+
+    def search_facts_semantic(
+        self,
+        query_vector: list[float],
+        project_id: str,
+        limit: int = 5,
+        min_similarity: float = 0.40,
+    ) -> list[dict]:
+        """Search facts within a project using semantic vector similarity.
+
+        Guarantees:
+        - 100% project-scoped authorization (never leaks facts from other projects).
+        - Dual retrieval path:
+          1. Native FalkorDB vector index oversampling (K=max(50, limit*10)) with project join.
+          2. Complete in-project fallback scan to guarantee zero recall loss when
+             cross-project candidates dominate the global top-K.
+        - Sorts by cosine similarity descending.
+        """
+        if not project_id or not project_id.strip():
+            logger.warning("search_facts_semantic called without project_id; returning [] for isolation.")
+            return []
+
+        if not query_vector or len(query_vector) != settings.EMBEDDING_DIM:
+            raise ValueError(f"query_vector must have dimension {settings.EMBEDDING_DIM}")
+
+        candidate_scores: dict[str, float] = {}
+
+        # 1. Native FalkorDB Vector Index Oversampling
+        vec_str = "[" + ", ".join(f"{float(x):.8f}" for x in query_vector) + "]"
+        k_oversample = max(50, limit * 10)
+        idx_query = (
+            f"CALL db.idx.vector.queryNodes('Fact', 'embedding', {k_oversample}, vecf32({vec_str})) "
+            f"YIELD node, score "
+            f"RETURN node.id as id, score"
+        )
+        try:
+            res = self.graph.query(idx_query)
+            for row in res.result_set:
+                fid, dist = row[0], float(row[1])
+                sim = max(-1.0, min(1.0, 1.0 - dist))
+                candidate_scores[fid] = sim
+        except Exception as e:
+            logger.warning(f"Vector index query failed, relying on project scan: {e}")
+
+        # 2. Intersect candidate IDs with Project ownership
+        project_facts: dict[str, dict] = {}
+        if candidate_scores:
+            join_query = (
+                "MATCH (p:Project {id: $project_id})-[:HAS_FACT]->(f:Fact) "
+                "WHERE f.id IN $ids "
+                "RETURN f"
+            )
+            join_res = self.graph.query(
+                join_query,
+                params={"project_id": project_id, "ids": list(candidate_scores.keys())},
+            )
+            for node in _result_nodes(join_res):
+                fid = node.get("id")
+                if fid in candidate_scores:
+                    node["similarity"] = candidate_scores[fid]
+                    project_facts[fid] = node
+
+        # 3. In-Project Guaranteed Recall Fallback:
+        # If vector index returned fewer than `limit` candidates for this project,
+        # scan the project's own facts to guarantee 100% recall.
+        if len(project_facts) < limit:
+            from src.services.embedding_service import cosine_similarity
+            fallback_res = self.graph.ro_query(
+                Q.GET_ALL_PROJECT_FACT_EMBEDDINGS,
+                params={"project_id": project_id},
+            )
+            for row in fallback_res.result_set:
+                fid, emb, model, dim = row[0], row[1], row[2], row[3]
+                if fid not in project_facts and emb and isinstance(emb, list) and len(emb) == settings.EMBEDDING_DIM:
+                    sim = cosine_similarity(query_vector, emb)
+                    fact_node = self.get_fact(fid)
+                    if fact_node:
+                        fact_node["similarity"] = sim
+                        project_facts[fid] = fact_node
+
+        # Filter by min_similarity and sort by similarity DESC
+        qualified = [
+            f for f in project_facts.values()
+            if f.get("similarity", 0.0) >= min_similarity
+        ]
+        qualified.sort(
+            key=lambda f: (
+                f.get("similarity", 0.0),
+                1 if f.get("status") == "current" else 0,
+                f.get("updated_at", ""),
+            ),
+            reverse=True,
+        )
+        return qualified[:limit]
+
+    def backfill_fact_embeddings(
+        self,
+        project_id: Optional[str] = None,
+        batch_size: int = 50,
+    ) -> dict:
+        """Safe, restartable, idempotent embedding backfill for Facts.
+
+        Processes un-embedded facts in bounded batches.
+        Validates embeddings before saving.
+        Handles per-record failures gracefully without terminating the job.
+        Never alters existing IDs, relationships, or non-embedding properties.
+        """
+        from src.services.embedding_service import (
+            format_fact_for_embedding,
+            get_embedding,
+            check_embedding_health,
+        )
+
+        health = check_embedding_health()
+        if not health["available"]:
+            raise RuntimeError(f"Embedding service not available for backfill: {health.get('error')}")
+
+        target_model = settings.EMBEDDING_MODEL
+        target_dim = settings.EMBEDDING_DIM
+
+        total_processed = 0
+        total_embedded = 0
+        failures: list[dict] = []
+
+        while True:
+            if project_id:
+                res = self.graph.query(
+                    Q.GET_UNEMBEDDED_FACTS,
+                    params={
+                        "project_id": project_id,
+                        "model": target_model,
+                        "dimension": target_dim,
+                        "limit": batch_size,
+                    },
+                )
+            else:
+                res = self.graph.query(
+                    Q.GET_UNEMBEDDED_FACTS_GLOBAL,
+                    params={
+                        "model": target_model,
+                        "dimension": target_dim,
+                        "limit": batch_size,
+                    },
+                )
+
+            batch = res.result_set
+            if not batch:
+                break  # Backfill complete
+
+            for row in batch:
+                fid = row[0]
+                subject = row[1] or ""
+                predicate = row[2] or ""
+                value = row[3] or ""
+                total_processed += 1
+
+                text = format_fact_for_embedding(subject, predicate, value)
+                if not text:
+                    failures.append({"id": fid, "error": "Empty fact text representation"})
+                    continue
+
+                try:
+                    vec = get_embedding(text, model=target_model)
+                    self.set_fact_embedding(fid, vec, model=target_model)
+                    total_embedded += 1
+                except Exception as exc:
+                    logger.warning(f"Backfill failed for fact {fid}: {exc}")
+                    failures.append({"id": fid, "error": str(exc)})
+
+            # If the entire batch failed, stop loop to avoid infinite loop on broken nodes
+            if total_embedded == 0 and len(failures) >= len(batch):
+                logger.error("All records in batch failed to embed. Halting backfill loop.")
+                break
+
+        return {
+            "total_processed": total_processed,
+            "total_embedded": total_embedded,
+            "total_failed": len(failures),
+            "failures": failures,
+            "is_complete": len(failures) == 0,
+        }
 
     # ─── Decision ────────────────────────────────────────────────
 

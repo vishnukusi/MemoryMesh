@@ -39,3 +39,10 @@ htmlcov/
 .vscode/
 *.swp
 *.swo
+
+# Windows Python virtual environments
+.venv_win/
+
+# Generated frontend dependencies and builds
+**/node_modules/
+**/dist/

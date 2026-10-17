@@ -46,10 +46,35 @@ def bootstrap_schema(tenant_id: str) -> None:
     _safe_create_index(graph, "IdempotencyRecord", "key")
     _safe_create_index(graph, "IdempotencyRecord", "reservation_token")
 
+    # Vector index for Fact nodes (Stage 3 semantic memory retrieval)
+    from src.config import settings
+    _safe_create_vector_index(graph, "Fact", "embedding", dimension=settings.EMBEDDING_DIM)
+
     # Explicit migration for legacy records missing reservation_token
     _migrate_legacy_idempotency_records(graph)
 
     logger.info(f"Schema bootstrapped for tenant: {tenant_id}")
+
+
+def _safe_create_vector_index(
+    graph: Graph,
+    label: str,
+    prop: str,
+    dimension: int = 768,
+    similarity_function: str = "cosine",
+) -> None:
+    """Create a FalkorDB vector index, ignoring if it already exists."""
+    try:
+        graph.query(
+            f'CREATE VECTOR INDEX FOR (n:{label}) ON (n.{prop}) '
+            f'OPTIONS {{dimension: {dimension}, similarityFunction: "{similarity_function}"}}'
+        )
+    except Exception as e:
+        msg = str(e).lower()
+        if "already" in msg or "exists" in msg or "equivalent" in msg or "indexed" in msg:
+            pass  # Index already exists
+        else:
+            logger.warning(f"Vector index creation failed for {label}.{prop}: {e}")
 
 
 def _safe_create_index(graph: Graph, label: str, prop: str) -> None:

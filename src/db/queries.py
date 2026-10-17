@@ -133,6 +133,32 @@ WHERE (toLower(f.subject) CONTAINS toLower($query)
 RETURN f ORDER BY f.updated_at DESC LIMIT $limit
 """
 
+GET_UNEMBEDDED_FACTS = """
+MATCH (p:Project {id: $project_id})-[:HAS_FACT]->(f:Fact)
+WHERE f.embedding IS NULL OR f.embedding_model <> $model OR f.embedding_dim <> $dimension
+RETURN f.id as id, f.subject as subject, f.predicate as predicate, f.value as value
+LIMIT $limit
+"""
+
+GET_UNEMBEDDED_FACTS_GLOBAL = """
+MATCH (f:Fact)
+WHERE f.embedding IS NULL OR f.embedding_model <> $model OR f.embedding_dim <> $dimension
+RETURN f.id as id, f.subject as subject, f.predicate as predicate, f.value as value
+LIMIT $limit
+"""
+
+GET_PROJECT_FACTS_BY_IDS = """
+MATCH (p:Project {id: $project_id})-[:HAS_FACT]->(f:Fact)
+WHERE f.id IN $ids
+RETURN f
+"""
+
+GET_ALL_PROJECT_FACT_EMBEDDINGS = """
+MATCH (p:Project {id: $project_id})-[:HAS_FACT]->(f:Fact)
+WHERE f.embedding IS NOT NULL
+RETURN f.id as id, f.embedding as embedding, f.embedding_model as model, f.embedding_dim as dim
+"""
+
 # ─── Decision ────────────────────────────────────────────────────
 
 CREATE_DECISION = """

@@ -32,6 +32,12 @@ class Settings:
     MODEL_TIMEOUT: int = int(os.getenv("MODEL_TIMEOUT", "120"))
     MAX_CONCURRENT_INFERENCE: int = int(os.getenv("MAX_CONCURRENT_INFERENCE", "2"))
 
+    # Ollama embedding model
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "768"))
+    EMBEDDING_TIMEOUT: int = int(os.getenv("EMBEDDING_TIMEOUT", "10"))
+    EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "50"))
+
     # Multi-tenant graph settings
     GRAPH_PREFIX: str = os.getenv("GRAPH_PREFIX", "memorymesh_")
     ALLOWED_TENANTS: List[str] = ["tenant_alpha", "tenant_beta"]

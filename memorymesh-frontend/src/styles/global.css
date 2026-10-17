@@ -1,0 +1,94 @@
+@import '@fontsource-variable/sora';
+@import '@fontsource-variable/jetbrains-mono';
+
+:root {
+  --bg: #05070a;
+  --bg-2: #0a0e14;
+  --graphite: #10151d;
+  --graphite-2: #171d27;
+  --line: rgba(220, 232, 245, 0.09);
+  --line-strong: rgba(220, 232, 245, 0.18);
+  --text: #efeae2;
+  --muted: #8d97a7;
+  --dim: #5d6675;
+  --cyan: #7fe3f0;
+  --teal: #38b2ac;
+  --blue: #6f8fd0;
+  --warn: #e3b866;
+  --bad: #e5826f;
+  --good: #7fd6a4;
+  --font: 'Sora Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+  --radius: 10px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+html[data-reduce-motion='true'] { scroll-behavior: auto; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+h1, h2, h3, h4, p { margin: 0; }
+a { color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
+img, svg, canvas { display: block; max-width: 100%; }
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; border-radius: 4px; }
+::selection { background: rgba(127, 227, 240, 0.28); }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; left: 12px; top: -60px; z-index: 100;
+  background: var(--cyan); color: #031316; padding: 10px 14px; border-radius: 8px; text-decoration: none; font-weight: 600;
+}
+.skip-link:focus { top: 12px; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 0 20px; border-radius: 999px; cursor: pointer; text-decoration: none;
+  border: 1px solid var(--line-strong); background: transparent; font-size: 0.875rem; font-weight: 500;
+  letter-spacing: 0.02em; transition: background 0.2s, border-color 0.2s, transform 0.2s;
+}
+.btn:hover { border-color: var(--cyan); background: rgba(127, 227, 240, 0.06); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: #dfe7ee; color: #06090d; border-color: transparent; }
+.btn-primary:hover { background: #fff; border-color: transparent; }
+.btn-sm { min-height: 34px; padding: 0 14px; font-size: 0.8125rem; }
+.btn-danger:hover { border-color: var(--bad); background: rgba(229, 130, 111, 0.08); }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-family: var(--mono); font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase;
+  border: 1px solid var(--line-strong); color: var(--muted); white-space: nowrap;
+}
+.badge.demo { color: var(--warn); border-color: rgba(227, 184, 102, 0.4); }
+.badge.ok, .badge.completed { color: var(--good); border-color: rgba(127, 214, 164, 0.4); }
+.badge.down, .badge.blocked { color: var(--bad); border-color: rgba(229, 130, 111, 0.4); }
+.badge.in_progress, .badge.claimed { color: var(--cyan); border-color: rgba(127, 227, 240, 0.4); }
+.badge.pending, .badge.unknown { color: var(--muted); }
+
+.mono { font-family: var(--mono); }
+.eyebrow { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--cyan); }
+.muted { color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+html[data-reduce-motion='true'] *, html[data-reduce-motion='true'] *::before, html[data-reduce-motion='true'] *::after {
+  animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important;
+}
+
+/* Shared by landing and console */
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: 0.04em; text-decoration: none; padding: 0 8px; }
+.brand-mark { width: 22px; height: 22px; }
